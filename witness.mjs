@@ -272,6 +272,37 @@ function verifyChain() {
 
 function cmdVerify() {
   const r = verifyChain();
+  // --json is for machines (the dashboard in app.mjs, and any CI that wants
+  // structure rather than a string to regex). The human output stays as it was:
+  // two consumers parsing the same sentences is how tools drift apart.
+  if (process.argv.includes('--json')) {
+    let keys = [];
+    try { keys = loadPub(); } catch { /* uninitialised repo */ }
+    const chain = readChain();
+    console.log(JSON.stringify({
+      ok: r.ok,
+      checked: r.checked,
+      problems: r.problems,
+      signers: r.signers || [],
+      keys: keys.map((k) => k.keyId).filter(Boolean),
+      chain: chain.map((e) => ({
+        index: e.index,
+        action: e.action,
+        actor: e.actor,
+        summary: e.summary,
+        files: e.files || [],
+        regressionOf: e.regressionOf,
+        timestamp: e.timestamp,
+        hash: e.hash,
+        prevHash: e.prevHash,
+        signature: e.signature,
+        // Which committed public key signed THIS entry, so the UI can show it
+        // per row rather than only as a chain-wide total.
+        signedBy: (r.signedBy && r.signedBy[e.index]) || null,
+      })),
+    }, null, 2));
+    process.exit(r.ok ? 0 : 1);
+  }
   console.log('witness: ' + r.checked + ' entries checked - ' + (r.ok ? 'CHAIN INTACT' : 'TAMPERING DETECTED'));
   if (r.signers && r.signers.length > 1) {
     console.log('  signed by ' + r.signers.length + ' keys: ' + r.signers.join(', '));

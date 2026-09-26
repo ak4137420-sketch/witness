@@ -20,6 +20,8 @@ const git = (args) => execFileSync('git', args, { cwd: target, encoding: 'utf8' 
 
 const SRC = fileURLToPath(new URL('./hooks/commit-msg', import.meta.url));
 const CLI = fileURLToPath(new URL('./witness.mjs', import.meta.url));
+const APP = fileURLToPath(new URL('./app.mjs', import.meta.url));
+const UI = fileURLToPath(new URL('./ui.html', import.meta.url));
 
 console.log('witness: installing into ' + target);
 
@@ -122,6 +124,8 @@ try {
   mkdirSync(vendored, { recursive: true });
   copyFileSync(CLI, join(vendored, 'witness.mjs'));
   copyFileSync(SRC, join(vendored, 'commit-msg'));
+  copyFileSync(APP, join(vendored, 'app.mjs'));
+  copyFileSync(UI, join(vendored, 'ui.html'));
   console.log('witness: vendored the tool at tools/witness/ (so clones are self-sufficient)');
 } catch (e) {
   console.log('witness: could not vendor the tool (' + e.message.split('\n')[0] + ')');
@@ -134,3 +138,4 @@ console.log('  git add .witness/ tools/ && git commit   # commit the chain + ven
 console.log('  WITNESS_SKIP=1 git commit ...     # escape hatch, records nothing');
 console.log('  node "' + CLI + '" verify        # check the chain');
 console.log('  node "' + CLI + '" report        # write .witness/report.md');
+console.log('  node "' + APP + '"           # open the local dashboard');

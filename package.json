@@ -10,7 +10,8 @@
     "verify": "node witness.mjs verify",
     "report": "node witness.mjs report",
     "test": "node test-all.mjs",
-    "test:unit": "node witness.mjs selftest"
+    "test:unit": "node witness.mjs selftest",
+    "app": "node app.mjs"
   },
   "license": "MIT"
 }

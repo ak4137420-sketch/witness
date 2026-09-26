@@ -274,6 +274,28 @@ try {
   check('restoring the chain makes it pass again',
     finalGate.code === 0 && /PASS/.test(finalGate.out), finalGate.out.trim());
 
+  // ---- 14. dashboard distribution ---------------------------------------
+  // The browser is deliberately a thin view over `verify --json`, rather than
+  // a second implementation of hashing or signature verification. These are
+  // inventory assertions: a release that omits either half is not an app.
+  section('14. local dashboard distribution');
+  const appSource = readFileSync(join(HERE, 'app.mjs'), 'utf8');
+  const uiSource = readFileSync(join(HERE, 'ui.html'), 'utf8');
+  const packageSource = readFileSync(join(HERE, 'package.json'), 'utf8');
+  const installSource = readFileSync(join(HERE, 'install-hook.mjs'), 'utf8');
+  check('dashboard server ships', existsSync(join(HERE, 'app.mjs')));
+  check('dashboard UI ships', existsSync(join(HERE, 'ui.html')));
+  check('installer vendors the dashboard for clones',
+    installSource.includes("copyFileSync(APP, join(vendored, 'app.mjs'))") &&
+    installSource.includes("copyFileSync(UI, join(vendored, 'ui.html'))"));
+  check('dashboard verifies through the CLI JSON output',
+    appSource.includes("[CLI, 'verify', '--json']"));
+  check('dashboard exposes state and action endpoints',
+    appSource.includes("'/api/state'") && appSource.includes("'/api/action'"));
+  check('package provides the dashboard command', /"app"\s*:\s*"node app\.mjs"/.test(packageSource));
+  check('dashboard UI reads state and invokes actions',
+    uiSource.includes("fetch('/api/state'") && uiSource.includes("fetch('/api/action'"));
+
 } catch (e) {
   fail++;
   console.log('\n  HARNESS ERROR: ' + String(e.stderr || e.message));

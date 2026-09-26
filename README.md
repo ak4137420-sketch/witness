@@ -28,6 +28,7 @@ node witness.mjs verify                      →  CHAIN INTACT
 - [Working in a clone](#working-in-a-clone)
 - [Environment variables](#environment-variables)
 - [CI: gating a pull request](#ci-gating-a-pull-request)
+- [Local dashboard](#local-dashboard)
 - [Testing](#testing)
 - [Files](#files)
 - [Limitations](#limitations-read-this)
@@ -236,7 +237,7 @@ The installer:
 3. pins the signing key id in `git config witness.keyId`;
 4. removes a superseded `pre-commit` hook;
 5. adds legacy in-repo key patterns to `.gitignore`;
-6. vendors the tool to `tools/witness/` so clones are self-sufficient;
+6. vendors the CLI, hook, and dashboard to `tools/witness/` so clones are self-sufficient;
 7. refuses to write its hook anywhere outside the target repository.
 
 Then commit the chain and the vendored tool:
@@ -337,7 +338,7 @@ precise about what does and does not survive `git clone`:
 |---|---|
 | `.witness/chain.jsonl` | `.git/hooks/` |
 | `.witness/pubkey.json` | `.git/config` |
-| `tools/witness/` (vendored tool) | your `~/.witness/keys/` |
+| `tools/witness/` (vendored CLI, hook, dashboard) | your `~/.witness/keys/` |
 
 So a fresh clone has **no hook and no pinned config**. Without a fix, a
 contributor's commits would simply go unrecorded — provenance stopping silently
@@ -345,9 +346,9 @@ at the fork, which is the exact failure this tool exists to prevent.
 
 The fix, all of which is in place:
 
-1. **The tool is vendored** to `tools/witness/`, so a clone has a working tool
-   even with no config. The hook falls back to `node_modules/witness/` and
-   `tools/witness/` before the pinned absolute path.
+1. **The CLI, hook, and dashboard are vendored** to `tools/witness/`, so a clone
+   has a working tool and UI even with no config. The hook falls back to
+   `node_modules/witness/` and `tools/witness/` before the pinned absolute path.
 2. **The key id is recovered from the committed `pubkey.json`.** Since neither
    hooks nor config travel, the committed public key is the one thing a clone
    reliably inherits.
@@ -446,11 +447,36 @@ sh ci-verify.sh                 # falls back to upstream, then main, then master
 
 ---
 
+## Local dashboard
+
+`witness` also includes a dependency-free local dashboard. It reads the same
+verification result as `witness verify` — it does **not** duplicate the crypto
+in the browser — and shows the signed chain newest first.
+
+```bash
+npm run app
+```
+
+Then open <http://localhost:7373>. To inspect a different witness repository or
+use another local port:
+
+```bash
+node app.mjs /path/to/repo --port 8080
+```
+
+The server binds only to `127.0.0.1`; it is never exposed on the network. From
+the dashboard you can verify the chain, generate `.witness/report.md`, record a
+manually described change, or mark an earlier entry as regressed. Recording
+requires the same private signing key as the CLI, so the app fails closed when
+the key is unavailable.
+
+---
+
 ## Testing
 
 ```bash
 node witness.mjs selftest    # 19 checks — the crypto and the two attacks
-node test-all.mjs            # 51 checks, 13 sections — the real product
+node test-all.mjs            # 58 checks, 14 sections — the real product
 ```
 
 `test-all.mjs` is the end-to-end suite. It creates real git repos in a temp
@@ -463,7 +489,7 @@ refused commit did not land, and that the private key is not in the repo.
 
 ```bash
 node test-all.mjs
-# 51 passed, 0 failed
+# 58 passed, 0 failed
 ```
 
 ---
@@ -474,8 +500,10 @@ node test-all.mjs
 witness.mjs           the CLI — key custody, chain, verify, report, selftest
 install-hook.mjs      installs the hook, pins config, vendors the tool
 hooks/commit-msg      the git hook itself (POSIX sh, no dependencies)
-test-all.mjs          end-to-end suite, 51 checks
+test-all.mjs          end-to-end suite, 58 checks
 ci-verify.sh          the CI gate: verify + entry-count check
+app.mjs               localhost dashboard server (no dependencies)
+ui.html               dashboard UI, served by app.mjs
 package.json          no dependencies; scripts for the commands above
 .witness/chain.jsonl  the chain            ← commit this
 .witness/pubkey.json  public keys only     ← commit this
