@@ -27,6 +27,7 @@ node witness.mjs verify                      →  CHAIN INTACT
 - [Multiple signers](#multiple-signers)
 - [Working in a clone](#working-in-a-clone)
 - [Environment variables](#environment-variables)
+- [CI: gating a pull request](#ci-gating-a-pull-request)
 - [Testing](#testing)
 - [Files](#files)
 - [Limitations](#limitations-read-this)
@@ -377,11 +378,79 @@ quietly substitute a different one.
 
 ---
 
+## CI: gating a pull request
+
+Copy two files into your repo:
+
+- [`.github/workflows/witness.yml`](.github/workflows/witness.yml)
+- [`ci-verify.sh`](ci-verify.sh)
+
+It runs on every pull request and on pushes to main/master, and fails the build
+when the chain is broken.
+
+### Why not just run `witness verify` in CI
+
+Because `verify` is **integrity**-checking, not **completeness**-checking. It
+confirms the entries present are genuine and correctly linked. It cannot tell
+you whether entries are *missing* — and a truncated or deleted chain verifies
+perfectly. All three of these exit 0 today:
+
+```bash
+$ rm .witness/chain.jsonl    && witness verify
+witness: 0 entries checked - CHAIN INTACT          # exit 0
+
+$ head -4 chain.jsonl > chain.jsonl                # 7 entries -> 4
+$ witness verify
+witness: 4 entries checked - CHAIN INTACT          # exit 0
+```
+
+Entries 0–3 are still a perfectly valid chain. So a CI job that only runs
+`verify` is a **green check on a gutted chain** — the most dangerous possible
+outcome, because it is indistinguishable from success.
+
+### What the gate actually checks
+
+1. **The chain exists.** A missing `.witness/chain.jsonl` fails, rather than
+   passing vacuously.
+2. **No entries were lost.** The entry count is compared against the chain in
+   the **base branch**, read from git history with `git show`. A PR can add
+   entries; it cannot lower the number the gate compares against, because it
+   does not control the base branch's commits.
+3. **The chain verifies.** Signatures and hash links, via `witness verify`.
+
+The entry-count check runs *before* the cryptographic check, so a truncation is
+reported as a truncation rather than buried in signature errors.
+
+```bash
+ci-verify: TAMPERING - the chain lost entries.
+  main has 7 entries, this branch has 4.
+  The chain is append-only; entries cannot be removed. Someone deleted
+  history, or the branch was rewound. Both need investigating.
+```
+
+### It will not break repos that don't use witness
+
+If there is no chain and no public key, the gate prints `nothing to verify,
+skipping` and exits 0. A project that vendors the tool without recording
+anything gets a passing check, not a spurious failure. The tell that
+distinguishes "never adopted witness" from "someone deleted the chain" is
+`pubkey.json`: it survives a deleted chain, because an attacker removing the
+evidence has no reason to remove the key that made forging it hard.
+
+### Using it outside GitHub Actions
+
+```bash
+sh ci-verify.sh origin/main     # any trusted ref
+sh ci-verify.sh                 # falls back to upstream, then main, then master
+```
+
+---
+
 ## Testing
 
 ```bash
 node witness.mjs selftest    # 19 checks — the crypto and the two attacks
-node test-all.mjs            # 41 checks, 12 sections — the real product
+node test-all.mjs            # 51 checks, 13 sections — the real product
 ```
 
 `test-all.mjs` is the end-to-end suite. It creates real git repos in a temp
@@ -389,12 +458,12 @@ directory, makes real commits through the real installed hook, and then attacks
 the chain the way an attacker would — sections 6 and 7 are the two attack models
 above, run against a genuine repo. It covers install, recording, real summaries,
 the escape hatch, both attacks, recovery, regression tracking, the report,
-fail-closed behaviour, and key custody. It asserts on *absence* too: that a
+fail-closed behaviour, key custody, and the CI gate. It asserts on *absence* too: that a
 refused commit did not land, and that the private key is not in the repo.
 
 ```bash
 node test-all.mjs
-# 41 passed, 0 failed
+# 51 passed, 0 failed
 ```
 
 ---
@@ -405,7 +474,8 @@ node test-all.mjs
 witness.mjs           the CLI — key custody, chain, verify, report, selftest
 install-hook.mjs      installs the hook, pins config, vendors the tool
 hooks/commit-msg      the git hook itself (POSIX sh, no dependencies)
-test-all.mjs          end-to-end suite, 41 checks
+test-all.mjs          end-to-end suite, 51 checks
+ci-verify.sh          the CI gate: verify + entry-count check
 package.json          no dependencies; scripts for the commands above
 .witness/chain.jsonl  the chain            ← commit this
 .witness/pubkey.json  public keys only     ← commit this
@@ -429,9 +499,11 @@ none.
    independent of the signer (a public timestamp service, a transparency log, a
    notarised digest). Not implemented. It is the single most important thing
    missing.
-2. **No enforcement.** `witness verify` records and reports; nothing blocks a
-   bad merge. A CI step running `verify` on every PR is the obvious next piece
-   and is not written yet.
+2. **The gate can be removed by the person it is meant to police.** The CI
+   workflow enforces the chain, but anyone who can merge can delete the workflow
+   along with it. Branch protection (requiring the `witness` check to pass, and
+   not allowing it to be dismissed) is what makes it stick — that is GitHub
+   configuration, not something a file in the repo can enforce.
 3. **Local hook, locally skippable.** `WITNESS_SKIP=1`, `--no-verify`, or
    editing `.git/hooks/` all bypass recording. It is loud, not impossible.
 4. **A signature proves authorship of a hash, not truth of a claim.** It proves

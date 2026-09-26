@@ -9,7 +9,7 @@
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,12 @@ const chainPath = join(repo, '.witness/chain.jsonl');
 // so a passing commit's output would silently look like silence.
 const run = (cmd, args, extraEnv) => {
   const r = spawnSync(cmd, args, { cwd: repo, env: { ...env, ...extraEnv }, encoding: 'utf8' });
+  return { code: r.status ?? 1, out: (r.stdout || '') + (r.stderr || '') };
+};
+// Section 13 drives the CI gate inside its own repository, so it needs a runner
+// that can be pointed at a different cwd and environment than the main one.
+const runIn = (cwd, cmd, args, extraEnv) => {
+  const r = spawnSync(cmd, args, { cwd, env: { ...env, ...extraEnv }, encoding: 'utf8' });
   return { code: r.status ?? 1, out: (r.stdout || '') + (r.stderr || '') };
 };
 const attempt = (r) => r;
@@ -178,6 +184,95 @@ try {
   check('refusal explains the recovery', /--force-new-key/.test(refused.out), refused.out.trim());
   check('the refused init did not overwrite the public key',
     readFileSync(join(repo, '.witness/pubkey.json'), 'utf8') === pubBefore);
+
+  // ---- 13. the CI gate -------------------------------------------------
+  // ci-verify.sh exists because `witness verify` is integrity-checking, not
+  // completeness-checking: a chain that is truncated, or deleted outright, still
+  // verifies. Both of these are asserted here first, because a gate that cannot
+  // catch them is worse than no gate -- it is a green check on nothing.
+  section('13. the CI gate - what verify alone cannot catch');
+  const GATE = fileURLToPath(new URL('./ci-verify.sh', import.meta.url));
+  const tmpRoot = mkdtempSync(join(tmpdir(), 'witness-gate-'));
+  const gateRepo = join(tmpRoot, 'gate');
+  const gateKeys = join(tmpRoot, 'gate-keys');
+  mkdirSync(join(gateRepo, '.witness'), { recursive: true });
+  mkdirSync(join(gateRepo, 'tools', 'witness'), { recursive: true });
+  mkdirSync(gateKeys, { recursive: true });
+
+  // The gate resolves the tool from tools/witness/ first, exactly as a clone
+  // would, so seed a chain the gate can actually verify.
+  const seedEnv = { WITNESS_KEY_DIR: gateKeys, WITNESS_KEY_ID: 'gatesigner' };
+  copyFileSync(CLI, join(gateRepo, 'tools', 'witness', 'witness.mjs'));
+  copyFileSync(GATE, join(gateRepo, 'ci-verify.sh'));
+  const gitG = (args) => runIn(gateRepo, 'git', args, seedEnv);
+  const toolG = (args) => runIn(gateRepo, process.execPath,
+    [join(gateRepo, 'tools', 'witness', 'witness.mjs'), ...args], seedEnv);
+  gitG(['init', '-q']);
+  gitG(['config', 'user.name', 'gate']);
+  gitG(['config', 'user.email', 'gate@test']);
+  gitG(['config', 'commit.gpgsign', 'false']);
+  toolG(['init']);
+  toolG(['record', '--actor', 'gate', '--summary', 'seed entry', '--files', 'a.js']);
+  toolG(['record', '--actor', 'gate', '--summary', 'second entry', '--files', 'b.js']);
+  gitG(['add', '-A']);
+  gitG(['commit', '-qm', 'seed']);
+  gitG(['branch', '-M', 'main']);
+  const gatePath = join(gateRepo, '.witness', 'chain.jsonl');
+  const goodChain = readFileSync(gatePath, 'utf8');
+  const gate = () => runIn(gateRepo, 'sh', [join(gateRepo, 'ci-verify.sh')], seedEnv);
+
+  const okRun = gate();
+  check('gate passes an honest chain', okRun.code === 0 && /PASS/.test(okRun.out), okRun.out.trim());
+
+  // The attacks verify cannot see. Asserted against the PRODUCT first: if
+  // `verify` ever learns to catch these, the gate's extra checks become
+  // belt-and-braces rather than the only line of defence.
+  const lines = goodChain.trim().split('\n');
+  writeFileSync(gatePath, lines.slice(0, Math.floor(lines.length / 2)).join('\n') + '\n');
+  const truncVerify = attempt(toolG(['verify']));
+  check('CONFIRMED HOLE: verify alone passes a truncated chain',
+    truncVerify.code === 0 && /CHAIN INTACT/.test(truncVerify.out), truncVerify.out.trim());
+  const truncGate = gate();
+  check('gate catches the truncated chain',
+    truncGate.code === 1 && /lost entries/.test(truncGate.out), truncGate.out.trim());
+
+  writeFileSync(gatePath, '');
+  const emptyVerify = attempt(toolG(['verify']));
+  check('CONFIRMED HOLE: verify alone passes an empty chain',
+    emptyVerify.code === 0 && /0 entries checked/.test(emptyVerify.out), emptyVerify.out.trim());
+  const emptyGate = gate();
+  check('gate catches the emptied chain',
+    emptyGate.code === 1 && /empty/.test(emptyGate.out), emptyGate.out.trim());
+
+  // A deleted chain leaves the public key behind -- that asymmetry is what
+  // separates "never used witness" from "someone removed the evidence".
+  unlinkSync(gatePath);
+  const goneVerify = attempt(toolG(['verify']));
+  check('CONFIRMED HOLE: verify alone passes a deleted chain',
+    goneVerify.code === 0 && /0 entries checked/.test(goneVerify.out), goneVerify.out.trim());
+  const goneGate = gate();
+  check('gate catches the deleted chain',
+    goneGate.code === 1 && /deleted|gone/.test(goneGate.out), goneGate.out.trim());
+
+  // A repo that vendors the tool but never recorded anything must not fail CI.
+  // Without this the gate breaks any repo that merely depends on witness.
+  const plain = join(tmpRoot, 'plain');
+  mkdirSync(plain, { recursive: true });
+  runIn(plain, 'git', ['init', '-q']);
+  const plainRun = runIn(plain, 'sh', [GATE]);
+  check('a repo that never adopted witness is skipped, not failed',
+    plainRun.code === 0 && /nothing to verify/.test(plainRun.out), plainRun.out.trim());
+
+  // And a real edit still fails, through the cryptographic path.
+  writeFileSync(gatePath, forge(goodChain, 0, (e) => { e.summary = 'lies'; }));
+  const editGate = gate();
+  check('gate fails a forged entry',
+    editGate.code === 1 && /content hash mismatch/.test(editGate.out), editGate.out.trim());
+
+  writeFileSync(gatePath, goodChain);
+  const finalGate = gate();
+  check('restoring the chain makes it pass again',
+    finalGate.code === 0 && /PASS/.test(finalGate.out), finalGate.out.trim());
 
 } catch (e) {
   fail++;
