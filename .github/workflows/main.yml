@@ -1,0 +1,37 @@
+name: witness
+
+# Fails a pull request when the signed provenance chain is broken.
+#
+# Two separate failures are caught:
+#   1. the chain does not verify - an entry was edited, or a signature is bad
+#   2. the chain lost entries  - it was truncated or deleted, and would still
+#      have verified on its own. ci-verify.sh checks the entry count against the
+#      base branch, because a truncated chain is a valid chain.
+#
+# `permissions: contents: read` - this gate reads the repo and nothing else. It
+# must not be able to write to anything, least of all to the branch whose
+# provenance it is checking.
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, and the base branch alongside the PR head. The gate
+          # compares the two chains, so it needs both. A default shallow
+          # checkout does not include the base branch's chain.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify the witness chain
+        run: sh ci-verify.sh "origin/${{ github.base_ref || 'main' }}"
