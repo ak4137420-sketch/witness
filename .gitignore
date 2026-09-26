@@ -1,0 +1,4 @@
+node_modules/
+.witness/keys.json
+.witness/*.bak
+.witness-selftest/

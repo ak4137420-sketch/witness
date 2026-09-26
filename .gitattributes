@@ -1,0 +1,2 @@
+# The commit-msg hook is a POSIX sh script: CRLF line endings break it.
+* text=auto eol=lf

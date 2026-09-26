@@ -1,0 +1,126 @@
+#!/bin/sh
+# witness commit-msg hook - records every commit into the signed provenance chain.
+#
+# Installed by: node install-hook.mjs <repo-path>
+#
+# Why commit-msg and not pre-commit: at pre-commit time the message does not
+# exist yet, so the recorded summary has to be a diffstat guess. commit-msg runs
+# after git has the final message, so the chain stores the author's actual
+# stated intent.
+#
+# Escape hatch: WITNESS_SKIP=1 git commit ...   (records nothing, says so)
+#
+# Fails the commit if recording fails. A provenance tool that silently skips
+# entries is worse than none, because the gap is invisible.
+
+set -e
+
+if [ "$WITNESS_SKIP" = "1" ]; then
+  echo "witness: WITNESS_SKIP=1, nothing recorded"
+  exit 0
+fi
+
+root=$(git rev-parse --show-toplevel)
+msgfile=$1
+source_arg=$2
+
+# Merges and squashes are not authorship events; recording them adds noise and
+# would make every merge look like a new change.
+case "$source_arg" in
+  merge|squash)
+    echo "witness: $source_arg commit, nothing recorded"
+    exit 0
+    ;;
+esac
+
+# Locate the tool. Precedence:
+#   1. WITNESS_BIN                        - explicit override
+#   2. witness.bin, if it is SET           - the installer's choice
+#   3. a copy inside the repo             - what a clone actually has
+# A witness.bin that is set but missing is an ERROR, not a reason to look
+# elsewhere: silently falling through would record with a different tool than
+# the one configured, which is the kind of quiet substitution this tool exists
+# to make impossible.
+if [ -n "$WITNESS_BIN" ]; then
+  tool="$WITNESS_BIN"
+else
+  tool=$(git config witness.bin || true)
+  if [ -n "$tool" ] && [ ! -f "$tool" ]; then
+    echo "witness: witness.bin points at a file that does not exist:" >&2
+    echo "  $tool" >&2
+    echo "  Commit refused. Fix it with:" >&2
+    echo "    git config witness.bin /path/to/witness.mjs" >&2
+    echo "  or re-run the installer:  node install-hook.mjs ." >&2
+    exit 1
+  fi
+  if [ -z "$tool" ]; then
+    if [ -f "$root/node_modules/witness/witness.mjs" ]; then
+      tool="$root/node_modules/witness/witness.mjs"
+    elif [ -f "$root/tools/witness/witness.mjs" ]; then
+      tool="$root/tools/witness/witness.mjs"
+    else
+      tool=""
+    fi
+  fi
+fi
+
+if [ -z "$tool" ] || [ ! -f "$tool" ]; then
+  echo "witness: cannot find witness.mjs. Commit refused." >&2
+  echo "  fix:  git config witness.bin /path/to/witness.mjs" >&2
+  echo "  or:   vendor it at tools/witness/ or node_modules/witness/" >&2
+  echo "  or:   WITNESS_SKIP=1 git commit ...   (records nothing)" >&2
+  exit 1
+fi
+
+cd "$root"
+
+# Choose which signing key to use. Precedence:
+#   1. WITNESS_KEY_ID          - how a second signer (CI, a teammate) joins
+#   2. git config witness.keyId - what the installer pinned here
+#   3. the public key already committed in .witness/ - what a clone inherits,
+#      since neither .git/config nor .git/hooks survive a clone
+# Falling through to a fresh key would mint a new identity for an existing
+# chain, so the committed pubkey is the right fallback.
+if [ -z "$WITNESS_KEY_ID" ]; then
+  keyid=$(git config witness.keyId || true)
+  if [ -z "$keyid" ] && [ -f "$root/.witness/pubkey.json" ]; then
+    keyid=$(sed -n 's/.*"keyId"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' \
+            "$root/.witness/pubkey.json" | head -1)
+  fi
+  if [ -n "$keyid" ]; then
+    WITNESS_KEY_ID="$keyid"
+    export WITNESS_KEY_ID
+  fi
+fi
+
+# The real message, minus comment lines (git's own rule) and blank lines.
+summary=$(sed '/^#/d; /^[[:space:]]*$/d' "$msgfile" | head -1 | cut -c1-200)
+
+if [ -z "$summary" ]; then
+  echo "witness: empty commit message, nothing recorded"
+  exit 0
+fi
+
+files=$(git diff --cached --name-only | sed '/^$/d' | paste -sd, -)
+if [ -z "$files" ]; then
+  echo "witness: nothing staged, nothing recorded"
+  exit 0
+fi
+
+# First commit in a repo initialises the chain (and therefore the signing key,
+# which lands outside the repo).
+if [ ! -f "$root/.witness/pubkey.json" ]; then
+  echo "witness: no chain in this repo yet, initialising..."
+  node "$tool" init
+  # Adopt the id init just chose, so a later clone picks the same identity
+  # rather than minting a new one for this chain.
+  if [ -z "$WITNESS_KEY_ID" ] && [ -f "$root/.witness/pubkey.json" ]; then
+    WITNESS_KEY_ID=$(sed -n 's/.*"keyId"[[:space:]]*:[[:space:]]*"\([0-9a-f]*\)".*/\1/p' \
+                     "$root/.witness/pubkey.json" | head -1)
+    export WITNESS_KEY_ID
+  fi
+fi
+
+actor=${WITNESS_ACTOR:-$(git config user.name || echo unknown)}
+
+node "$tool" record --actor "$actor" --summary "$summary" --files "$files"
