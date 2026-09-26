@@ -139,6 +139,38 @@ hashing.
 Verification walks the file once, recomputing every hash, checking every
 signature, and checking each `prevHash` against the entry before it.
 
+#### The chain is always one entry behind
+
+This is structural, and it will surprise you if nobody says so.
+
+The `commit-msg` hook runs *after* git has written the commit. So when commit
+`abc1234` is created, entry N is appended to the working tree — but `abc1234`
+itself was written before entry N existed. Committing that entry requires
+commit `def5678`, which in turn appends entry N+1, which requires the next
+commit, and so on.
+
+In practice:
+
+```bash
+git status        # .witness/chain.jsonl is always modified, forever
+```
+
+This is not a bug, and it does not loop uncontrollably. The chain is always
+**exactly one entry behind history**, and the newest entry always describes the
+*previous* commit. A clone is the clean case: it checks out a tree whose
+`chain.jsonl` holds every entry up to and including its last commit.
+
+If you want a clean working tree after recording a commit, tell the hook not to
+record it:
+
+```bash
+WITNESS_SKIP=1 git commit --amend --no-edit   # amends without adding an entry
+```
+
+Or simply accept it. The alternative — recording at `pre-commit`, where the
+chain is already consistent — loses the real commit message, which is the one
+thing worth recording.
+
 ### Actions
 
 | Action | Meaning |
